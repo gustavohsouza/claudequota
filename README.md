@@ -10,7 +10,7 @@ Sua quota do Claude na menu bar do Mac. Sem abrir Settings → Usage nunca mais.
 
 ## Por quê
 
-No plano Max, os limites (sessão de 5h + semanal por modelo) definem qual modelo usar e quando. Checar isso exige três cliques até as configurações do Claude. Agora é um relance ao lado do relógio: laranja ≥75% usado, vermelho ≥90%, ponto vermelho quando o limite semanal do modelo top aperta.
+No plano Max, os limites (sessão de 5h + semanal por modelo) definem qual modelo usar e quando. Checar isso exige três cliques até as configurações do Claude. Agora é um relance ao lado do relógio: o texto fica sempre branco e nítido; o símbolo % fica laranja a partir de 75% de uso e vermelho a partir de 90%, e um ponto vermelho aparece quando o limite semanal do modelo top aperta.
 
 ## Requisitos
 

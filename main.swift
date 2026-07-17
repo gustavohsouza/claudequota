@@ -685,58 +685,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cdText = countdownString(to: session.resetsAt)
         let fCritical = (model.scoped?.percent ?? 0) >= 90
 
-        var color = NSColor.labelColor
-        var isStale = false
-        if used >= 90 { color = .systemRed }
-        else if used >= 75 { color = .systemOrange }
-        if case .stale = model.status { isStale = true; color = .secondaryLabelColor }
+        // Text stays labelColor (white on dark menu bars) at all times.
+        // Only the "%" glyph is tinted when the session gets tight.
+        var warnColor: NSColor? = nil
+        if used >= 90 { warnColor = .systemRed }
+        else if used >= 75 { warnColor = .systemOrange }
 
         if Prefs.stacked {
             button.attributedTitle = NSAttributedString(string: "")
-            button.image = stackedImage(top: pctText, bottom: cdText, color: color,
-                                        template: color == .labelColor && !fCritical && !isStale,
-                                        fCritical: fCritical)
+            button.image = stackedImage(top: pctText, bottom: cdText,
+                                        pctColor: warnColor, fCritical: fCritical)
             button.imagePosition = .imageOnly
         } else {
             button.image = nil
-            let plain = color == NSColor.labelColor
-            let attrs: [NSAttributedString.Key: Any] = plain
-                ? [.font: font, .foregroundColor: color]
-                : AppDelegate.outlinedAttrs(font: font, color: color)
-            let title = NSMutableAttributedString(string: "\(pctText)·\(cdText)", attributes: attrs)
+            let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+            let title = NSMutableAttributedString(string: String(pctText.dropLast()), attributes: base)
+            title.append(NSAttributedString(string: "%", attributes: [
+                .font: font, .foregroundColor: warnColor ?? NSColor.labelColor]))
+            title.append(NSAttributedString(string: "·\(cdText)", attributes: base))
             if fCritical {
-                title.append(NSAttributedString(string: "·F",
-                    attributes: AppDelegate.outlinedAttrs(font: font, color: .systemRed)))
+                title.append(NSAttributedString(string: "·F", attributes: [
+                    .font: font, .foregroundColor: NSColor.systemRed]))
             }
             button.attributedTitle = title
         }
     }
 
-    /// Attributes for colored (non-template) menu bar text: white outline + soft white
-    /// glow so orange/red stay readable over any wallpaper (e.g. blue menu bars).
-    static func outlinedAttrs(font: NSFont, color: NSColor) -> [NSAttributedString.Key: Any] {
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.white.withAlphaComponent(0.8)
-        shadow.shadowBlurRadius = 2.0
-        shadow.shadowOffset = .zero
-        return [.font: font,
-                .foregroundColor: color,
-                .strokeColor: NSColor.white,
-                .strokeWidth: -4.5,
-                .shadow: shadow]
-    }
-
-    func stackedImage(top: String, bottom: String, color: NSColor, template: Bool, fCritical: Bool) -> NSImage {
+    /// Crisp menu bar badge: text always labelColor (white on dark menu bars),
+    /// no stroke/shadow. Only the "%" glyph takes the warning color; a red "•"
+    /// appears when the weekly model limit is critical. Dynamic colors resolve
+    /// at draw time, so light/dark menu bars both render correctly.
+    func stackedImage(top: String, bottom: String, pctColor: NSColor?, fCritical: Bool) -> NSImage {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
-        let baseAttrs: [NSAttributedString.Key: Any] = template
-            ? [.font: font, .foregroundColor: NSColor.black]
-            : AppDelegate.outlinedAttrs(font: font, color: color)
-        let topAttr = NSMutableAttributedString(string: top, attributes: baseAttrs)
-        if fCritical {
-            topAttr.append(NSAttributedString(string: "•",
-                attributes: AppDelegate.outlinedAttrs(font: font, color: .systemRed)))
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+        let digits = top.hasSuffix("%") ? String(top.dropLast()) : top
+        let topAttr = NSMutableAttributedString(string: digits, attributes: base)
+        if top.hasSuffix("%") {
+            topAttr.append(NSAttributedString(string: "%", attributes: [
+                .font: font, .foregroundColor: pctColor ?? NSColor.labelColor]))
         }
-        let botAttr = NSAttributedString(string: bottom, attributes: baseAttrs)
+        if fCritical {
+            topAttr.append(NSAttributedString(string: "•", attributes: [
+                .font: font, .foregroundColor: NSColor.systemRed]))
+        }
+        let botAttr = NSAttributedString(string: bottom, attributes: base)
         let w = ceil(max(topAttr.size().width, botAttr.size().width)) + 4
         let h: CGFloat = 22
         let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
@@ -745,7 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             botAttr.draw(at: NSPoint(x: (w - bs.width) / 2, y: h / 2 - bs.height + 0.5))
             return true
         }
-        img.isTemplate = template
+        img.isTemplate = false
         return img
     }
 }
