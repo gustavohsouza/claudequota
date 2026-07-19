@@ -13,6 +13,7 @@ let kKeychainService = "Claude Code-credentials"
 let kClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 let kTokenURL = "https://platform.claude.com/v1/oauth/token"
 let kUsageURL = "https://api.anthropic.com/api/oauth/usage"
+let kProfileURL = "https://api.anthropic.com/api/oauth/profile"
 let kBetaHeader = "oauth-2025-04-20"
 let kPollInterval: TimeInterval = 80
 let kTickInterval: TimeInterval = 20
@@ -285,6 +286,7 @@ final class Fetcher {
     private let queue = DispatchQueue(label: "quota.fetch")
     private var failStreak = 0
     private var pausedUntil: Date?
+    private var lastProfileCheck: Date?
 
     func fetch(model: Model, force: Bool = false, statusUpdate: @escaping () -> Void) {
         queue.async { [weak self] in
@@ -301,8 +303,39 @@ final class Fetcher {
                 }
                 return
             }
+            // Plan tier can change (e.g. Max 5x → 20x); keychain copy is frozen at
+            // login time, so poll the live profile every 12h (and on launch/force).
+            if force || (self.lastProfileCheck.map { Date().timeIntervalSince($0) > 12 * 3600 } ?? true) {
+                self.lastProfileCheck = Date()
+                self.fetchProfile(token: creds.accessToken, model: model, statusUpdate: statusUpdate)
+            }
             self.attempt(creds: creds, model: model, tries: 0, statusUpdate: statusUpdate)
         }
+    }
+
+    static func tierLabel(_ raw: String) -> String {
+        if raw.contains("max_20x") { return "Max 20×" }
+        if raw.contains("max_5x") { return "Max 5×" }
+        if raw.contains("pro") { return "Pro" }
+        return raw
+    }
+
+    private func fetchProfile(token: String, model: Model, statusUpdate: @escaping () -> Void) {
+        var req = URLRequest(url: URL(string: kProfileURL)!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(kBetaHeader, forHTTPHeaderField: "anthropic-beta")
+        req.timeoutInterval = 15
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let org = json["organization"] as? [String: Any],
+                  let tier = org["rate_limit_tier"] as? String, !tier.isEmpty
+            else { return }
+            DispatchQueue.main.async {
+                model.tier = Fetcher.tierLabel(tier)
+                statusUpdate()
+            }
+        }.resume()
     }
 
     /// One request with smart retries: 401 → token refresh once; 429 → short retry
@@ -370,9 +403,8 @@ final class Fetcher {
                 model.rows = rows
                 model.lastUpdate = Date()
                 model.status = .ok
-                if tier.contains("max_5x") { model.tier = "Max 5×" }
-                else if tier.contains("max_20x") { model.tier = "Max 20×" }
-                else if !tier.isEmpty { model.tier = tier }
+                // Keychain tier only seeds an empty chip; the live profile wins.
+                if model.tier.isEmpty && !tier.isEmpty { model.tier = Fetcher.tierLabel(tier) }
                 writeStateLog(model: model)
             } else if code == 401 || code == 403 {
                 model.status = .authError
