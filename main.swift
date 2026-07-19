@@ -14,7 +14,7 @@ let kClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 let kTokenURL = "https://platform.claude.com/v1/oauth/token"
 let kUsageURL = "https://api.anthropic.com/api/oauth/usage"
 let kBetaHeader = "oauth-2025-04-20"
-let kPollInterval: TimeInterval = 60
+let kPollInterval: TimeInterval = 80
 let kTickInterval: TimeInterval = 20
 let kStateDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/ClaudeQuota")
@@ -54,8 +54,12 @@ func shell(_ launchPath: String, _ args: [String], stdin: String? = nil) -> (out
         inPipe.fileHandleForWriting.closeFile()
     }
     do { try p.run() } catch { return ("", -1) }
+    // Safety net: never hang forever on a stuck subprocess (e.g. keychain prompt)
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: killer)
     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
+    killer.cancel()
     return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
 }
 
@@ -282,10 +286,14 @@ final class Fetcher {
     private var failStreak = 0
     private var pausedUntil: Date?
 
-    func fetch(model: Model, statusUpdate: @escaping () -> Void) {
+    func fetch(model: Model, force: Bool = false, statusUpdate: @escaping () -> Void) {
         queue.async { [weak self] in
             guard let self = self else { return }
-            if let p = self.pausedUntil, p > Date() { return } // 429 backoff window
+            if force { self.pausedUntil = nil; self.failStreak = 0 } // manual refresh busts any pause
+            if let p = self.pausedUntil, p > Date() {
+                DispatchQueue.main.async { statusUpdate() }
+                return
+            }
             guard let creds = CredsManager.shared.refreshedCreds() else {
                 DispatchQueue.main.async {
                     model.status = .authError
@@ -293,30 +301,45 @@ final class Fetcher {
                 }
                 return
             }
-            self.request(token: creds.accessToken) { data, code in
-                if code == 401 {
-                    // stale token → force refresh once
+            self.attempt(creds: creds, model: model, tries: 0, statusUpdate: statusUpdate)
+        }
+    }
+
+    /// One request with smart retries: 401 → token refresh once; 429 → short retry
+    /// (the endpoint uses a tiny token bucket and answers Retry-After: 0).
+    private func attempt(creds: Creds, model: Model, tries: Int, statusUpdate: @escaping () -> Void) {
+        request(token: creds.accessToken) { [weak self] data, code, retryAfter in
+            guard let self = self else { return }
+            if code == 401 && tries == 0 {
+                self.queue.async {
                     guard let fresh = CredsManager.shared.refreshedCreds(force: true) else {
                         DispatchQueue.main.async { model.status = .authError; statusUpdate() }
                         return
                     }
-                    self.request(token: fresh.accessToken) { data2, code2 in
-                        self.finish(model: model, data: data2, code: code2, tier: fresh.rateLimitTier, statusUpdate: statusUpdate)
-                    }
-                } else {
-                    self.finish(model: model, data: data, code: code, tier: creds.rateLimitTier, statusUpdate: statusUpdate)
+                    self.attempt(creds: fresh, model: model, tries: 1, statusUpdate: statusUpdate)
                 }
+                return
             }
+            if code == 429 && tries < 2 {
+                let delay = max(retryAfter ?? 0, 2.5)
+                self.queue.asyncAfter(deadline: .now() + delay) {
+                    self.attempt(creds: creds, model: model, tries: tries + 1, statusUpdate: statusUpdate)
+                }
+                return
+            }
+            self.finish(model: model, data: data, code: code, tier: creds.rateLimitTier, statusUpdate: statusUpdate)
         }
     }
 
-    private func request(token: String, done: @escaping (Data?, Int) -> Void) {
+    private func request(token: String, done: @escaping (Data?, Int, Double?) -> Void) {
         var req = URLRequest(url: URL(string: kUsageURL)!)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(kBetaHeader, forHTTPHeaderField: "anthropic-beta")
         req.timeoutInterval = 15
         URLSession.shared.dataTask(with: req) { data, resp, _ in
-            done(data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
+            let http = resp as? HTTPURLResponse
+            let ra = http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            done(data, http?.statusCode ?? 0, ra)
         }.resume()
     }
 
@@ -325,7 +348,10 @@ final class Fetcher {
         let bodyPrefix = (code != 200) ? String(data: data?.prefix(200) ?? Data(), encoding: .utf8) ?? "" : ""
         if code == 200 && !rows.isEmpty {
             failStreak = 0; pausedUntil = nil
-        } else if code == 429 || code >= 500 {
+        } else if code == 429 {
+            // Short flat pause only — the bucket refills in seconds, next poll usually succeeds
+            pausedUntil = Date().addingTimeInterval(90)
+        } else if code >= 500 || code == 0 {
             failStreak += 1
             pausedUntil = Date().addingTimeInterval(min(300, 60 * pow(2, Double(failStreak - 1))))
         }
@@ -582,8 +608,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func didWake() { DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.poll() } }
 
-    func poll() {
-        fetcher.fetch(model: model) { [weak self] in self?.renderTitle() }
+    func poll(force: Bool = false) {
+        fetcher.fetch(model: model, force: force) { [weak self] in self?.renderTitle() }
     }
 
     @objc func togglePopover() {
@@ -594,7 +620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         closePanel()
         let root = PopoverView(
             model: model,
-            onRefresh: { [weak self] in self?.poll() },
+            onRefresh: { [weak self] in self?.poll(force: true) },
             onToggleLogin: { [weak self] on in self?.setLaunchAtLogin(on) },
             onQuit: { NSApp.terminate(nil) })
             .background(VisualEffectBackground())
