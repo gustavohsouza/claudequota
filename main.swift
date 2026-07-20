@@ -25,7 +25,7 @@ let kStateDir = FileManager.default.homeDirectoryForCurrentUser
 enum Prefs {
     static let d = UserDefaults.standard
     static var notifyReset: Bool {
-        get { d.object(forKey: "notifyReset") as? Bool ?? true }
+        get { d.object(forKey: "notifyReset") as? Bool ?? false } // default OFF: the 5h window restarts on every resumption of use, which spams
         set { d.set(newValue, forKey: "notifyReset") }
     }
     static var showUsed: Bool {
@@ -283,6 +283,7 @@ final class Model: ObservableObject {
 
 final class Fetcher {
     private var lastSessionReset: Date?
+    private var lastSessionPercent: Double = 0
     private let queue = DispatchQueue(label: "quota.fetch")
     private var failStreak = 0
     private var pausedUntil: Date?
@@ -392,14 +393,18 @@ final class Fetcher {
             model.lastHTTP = code
             model.lastErrorBody = bodyPrefix
             if !rows.isEmpty {
-                // session-reset notification
-                if let newReset = rows.first(where: { $0.id.hasPrefix("session") })?.resetsAt {
+                // Session-reset notification. Only meaningful when the previous window
+                // was actually tight (>=75% used) — the 5h window also restarts after
+                // any idle gap, which would otherwise spam on every resumption of use.
+                let sessionRow = rows.first { $0.id.hasPrefix("session") }
+                if let newReset = sessionRow?.resetsAt {
                     if let old = self.lastSessionReset, newReset.timeIntervalSince(old) > 60,
-                       Prefs.notifyReset {
+                       Prefs.notifyReset, self.lastSessionPercent >= 75 {
                         notify("Fresh 5h session window started")
                     }
                     self.lastSessionReset = newReset
                 }
+                self.lastSessionPercent = sessionRow?.percent ?? 0
                 model.rows = rows
                 model.lastUpdate = Date()
                 model.status = .ok
