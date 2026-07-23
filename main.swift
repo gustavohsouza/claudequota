@@ -19,6 +19,8 @@ let kPollInterval: TimeInterval = 80
 let kTickInterval: TimeInterval = 20
 let kStateDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/ClaudeQuota")
+let kAppName = "Claude Quota Monitor Bar"
+let kRepoURL = "https://github.com/gustavohsouza/claudequota"
 
 // MARK: - Prefs
 
@@ -35,6 +37,16 @@ enum Prefs {
     static var stacked: Bool {
         get { d.object(forKey: "stacked") as? Bool ?? true }
         set { d.set(newValue, forKey: "stacked") }
+    }
+    // 0 = system, 1 = light, 2 = dark
+    static var appearance: Int {
+        get { d.integer(forKey: "appearance") }
+        set { d.set(newValue, forKey: "appearance") }
+    }
+    // Which metric drives the menu bar: "session" | "weekly_all" | "weekly_scoped" | "auto"
+    static var barMetric: String {
+        get { d.string(forKey: "barMetric") ?? "session" }
+        set { d.set(newValue, forKey: "barMetric") }
     }
 }
 
@@ -174,6 +186,7 @@ extension Data {
 
 struct LimitRow: Identifiable {
     let id: String
+    let kind: String      // session | weekly_all | weekly_scoped | <raw>
     let label: String
     let percent: Double   // used, 0-100
     let resetsAt: Date?
@@ -218,18 +231,18 @@ func parseUsage(_ data: Data) -> [LimitRow] {
                 label = "Week · \(name)"
             default: label = "\(group.isEmpty ? kind : group) · \(kind)"
             }
-            rows.append(LimitRow(id: kind + label, label: label, percent: pct, resetsAt: resets, isActive: active))
+            rows.append(LimitRow(id: kind + label, kind: kind, label: label, percent: pct, resetsAt: resets, isActive: active))
         }
     }
     // Fallback for older/simpler schema
     if rows.isEmpty {
         if let fh = json["five_hour"] as? [String: Any] {
-            rows.append(LimitRow(id: "session", label: "Session (5h)",
+            rows.append(LimitRow(id: "session", kind: "session", label: "Session (5h)",
                                  percent: (fh["utilization"] as? Double) ?? 0,
                                  resetsAt: parseISO(fh["resets_at"] as? String), isActive: false))
         }
         if let sd = json["seven_day"] as? [String: Any] {
-            rows.append(LimitRow(id: "weekly_all", label: "Week · all models",
+            rows.append(LimitRow(id: "weekly_all", kind: "weekly_all", label: "Week · all models",
                                  percent: (sd["utilization"] as? Double) ?? 0,
                                  resetsAt: parseISO(sd["resets_at"] as? String), isActive: false))
         }
@@ -270,13 +283,22 @@ final class Model: ObservableObject {
     @Published var notifyReset: Bool = Prefs.notifyReset { didSet { Prefs.notifyReset = notifyReset } }
     @Published var showUsed: Bool = Prefs.showUsed { didSet { Prefs.showUsed = showUsed; onChange?() } }
     @Published var stacked: Bool = Prefs.stacked { didSet { Prefs.stacked = stacked; onChange?() } }
+    @Published var barMetric: String = Prefs.barMetric { didSet { Prefs.barMetric = barMetric; onChange?() } }
+    @Published var appearance: Int = Prefs.appearance { didSet { Prefs.appearance = appearance; onAppearanceChange?() } }
     @Published var launchAtLogin: Bool = false
 
     var onChange: (() -> Void)?
+    var onAppearanceChange: (() -> Void)?
     var lastHTTP: Int = 0
     var lastErrorBody: String = ""
-    var session: LimitRow? { rows.first { $0.id.hasPrefix("session") } }
-    var scoped: LimitRow? { rows.first { $0.id.hasPrefix("weekly_scoped") } }
+    var session: LimitRow? { rows.first { $0.kind == "session" } }
+    var scoped: LimitRow? { rows.first { $0.kind == "weekly_scoped" } }
+
+    /// The row currently driving the menu bar, honoring barMetric (or the tightest, for "auto").
+    var barRow: LimitRow? {
+        if barMetric == "auto" { return rows.max { $0.percent < $1.percent } ?? session ?? rows.first }
+        return rows.first { $0.kind == barMetric } ?? session ?? rows.first
+    }
 }
 
 // MARK: - Fetcher
@@ -427,7 +449,7 @@ final class Fetcher {
 func notify(_ text: String) {
     DispatchQueue.global().async {
         shell("/usr/bin/osascript", ["-e",
-            "display notification \"\(text)\" with title \"ClaudeQuota\""])
+            "display notification \"\(text)\" with title \"\(kAppName)\""])
     }
 }
 
@@ -440,7 +462,7 @@ func writeStateLog(model: Model) {
         "error_body": model.lastErrorBody
     ]
     dict["rows"] = model.rows.map { r -> [String: Any] in
-        ["id": r.id, "label": r.label, "percent": r.percent, "active": r.isActive,
+        ["id": r.id, "kind": r.kind, "label": r.label, "percent": r.percent, "active": r.isActive,
          "resets_at": r.resetsAt.map { ISO8601DateFormatter().string(from: $0) } ?? ""]
     }
     if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]) {
@@ -454,7 +476,11 @@ func loadCachedRows() -> [LimitRow] {
           let arr = json["rows"] as? [[String: Any]] else { return [] }
     return arr.compactMap { r in
         guard let id = r["id"] as? String, let label = r["label"] as? String else { return nil }
-        return LimitRow(id: id, label: label,
+        let kind = (r["kind"] as? String)
+            ?? (id.hasPrefix("session") ? "session"
+                : id.hasPrefix("weekly_scoped") ? "weekly_scoped"
+                : id.hasPrefix("weekly_all") ? "weekly_all" : id)
+        return LimitRow(id: id, kind: kind, label: label,
                         percent: (r["percent"] as? Double) ?? 0,
                         resetsAt: parseISO(r["resets_at"] as? String),
                         isActive: r["active"] as? Bool ?? false)
@@ -463,41 +489,113 @@ func loadCachedRows() -> [LimitRow] {
 
 // MARK: - Popover view
 
+/// A radio indicator: hollow ring, filled clay dot when selected.
+struct RadioDot: View {
+    let selected: Bool
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(selected ? Color.accentColor : Color.secondary.opacity(0.5), lineWidth: 1.5)
+                .frame(width: 14, height: 14)
+            if selected {
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+            }
+        }
+    }
+}
+
+/// One usage limit row. The whole row is a radio: clicking it selects that
+/// metric as the menu bar reading (no separate selector UI, no duplication).
 struct LimitRowView: View {
     let row: LimitRow
     let showUsed: Bool
+    let selected: Bool
+    let onSelect: () -> Void
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(row.label).font(.system(size: 12, weight: .medium))
-                if row.isActive {
-                    Text("active limit")
-                        .font(.system(size: 9))
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.orange.opacity(0.2)))
-                        .foregroundColor(.orange)
+        HStack(alignment: .top, spacing: 8) {
+            RadioDot(selected: selected).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(row.label).font(.system(size: 12, weight: .medium))
+                    if selected {
+                        Text("in menu bar")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.22)))
+                            .foregroundColor(.accentColor)
+                    }
+                    if row.isActive {
+                        Text("active limit")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange.opacity(0.2)))
+                            .foregroundColor(.orange)
+                    }
+                    Spacer()
+                    Text(showUsed
+                         ? "\(Int(row.percent.rounded()))% used"
+                         : "\(Int((100 - row.percent).rounded()))% left")
+                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        .foregroundColor(color)
                 }
-                Spacer()
-                Text(showUsed
-                     ? "\(Int(row.percent.rounded()))% used"
-                     : "\(Int((100 - row.percent).rounded()))% left")
-                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                    .foregroundColor(color)
-            }
-            ProgressView(value: min(max(row.percent, 0), 100), total: 100)
-                .tint(color)
-            HStack {
-                Spacer()
-                Text("resets \(absoluteResetString(row.resetsAt)) (\(countdownString(to: row.resetsAt)))")
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundColor(.secondary)
+                ProgressView(value: min(max(row.percent, 0), 100), total: 100)
+                    .tint(color)
+                HStack {
+                    Spacer()
+                    Text("resets \(absoluteResetString(row.resetsAt)) (\(countdownString(to: row.resetsAt)))")
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundColor(.secondary)
+                }
             }
         }
+        .padding(.vertical, 5).padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 7)
+            .fill(selected ? Color.accentColor.opacity(0.10) : Color.clear))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .help("Show this limit in the menu bar")
     }
     var color: Color {
         if row.percent >= 90 { return .red }
         if row.percent >= 75 { return .orange }
         return .accentColor
+    }
+}
+
+/// The "Auto" option: also a radio row, but slim (no bar). Shows which limit it
+/// currently resolves to (the tightest one).
+struct AutoRowView: View {
+    let selected: Bool
+    let resolvedLabel: String?
+    let onSelect: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RadioDot(selected: selected).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text("Auto").font(.system(size: 12, weight: .medium))
+                    if selected {
+                        Text("in menu bar")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.22)))
+                            .foregroundColor(.accentColor)
+                    }
+                    Spacer()
+                }
+                Text(selected && resolvedLabel != nil
+                     ? "follows the tightest limit · now: \(resolvedLabel!)"
+                     : "follows the tightest limit")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 5).padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 7)
+            .fill(selected ? Color.accentColor.opacity(0.10) : Color.clear))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .help("Show whichever limit is closest to its cap")
     }
 }
 
@@ -509,17 +607,22 @@ struct PopoverView: View {
     @State private var now = Date()
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
+    var tightestLabel: String? { model.rows.max { $0.percent < $1.percent }?.label }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Claude usage").font(.system(size: 13, weight: .bold))
-                if !model.tier.isEmpty {
-                    Text(model.tier).font(.system(size: 10))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+        VStack(alignment: .leading, spacing: 11) {
+            // Header: app name prominent, tier + status underneath
+            VStack(alignment: .leading, spacing: 3) {
+                Text(kAppName).font(.system(size: 15, weight: .bold))
+                HStack(spacing: 6) {
+                    if !model.tier.isEmpty {
+                        Text(model.tier).font(.system(size: 10))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    }
+                    Spacer()
+                    statusBadge
                 }
-                Spacer()
-                statusBadge
             }
 
             if model.status == .authError {
@@ -533,18 +636,43 @@ struct PopoverView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.1)))
             }
 
-            ForEach(model.rows) { row in
-                LimitRowView(row: row, showUsed: model.showUsed)
+            Text("SELECT WHAT SHOWS IN THE MENU BAR")
+                .font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+
+            VStack(spacing: 2) {
+                ForEach(model.rows) { row in
+                    LimitRowView(row: row, showUsed: model.showUsed,
+                                 selected: model.barMetric == row.kind,
+                                 onSelect: { model.barMetric = row.kind })
+                }
+                if model.rows.count > 1 {
+                    AutoRowView(selected: model.barMetric == "auto",
+                                resolvedLabel: tightestLabel,
+                                onSelect: { model.barMetric = "auto" })
+                }
             }
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Notify when 5h session resets", isOn: $model.notifyReset)
-                    .font(.system(size: 11))
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text("Appearance").font(.system(size: 11))
+                    Picker("", selection: $model.appearance) {
+                        Text("System").tag(0)
+                        Text("Light").tag(1)
+                        Text("Dark").tag(2)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 190)
+                }
                 Toggle("Show % used (instead of % left)", isOn: $model.showUsed)
                     .font(.system(size: 11))
                 Toggle("Compact menu bar (2 lines)", isOn: $model.stacked)
+                    .font(.system(size: 11))
+                Toggle("Notify when 5h session resets", isOn: $model.notifyReset)
                     .font(.system(size: 11))
                 Toggle("Launch at login", isOn: Binding(
                     get: { model.launchAtLogin },
@@ -565,6 +693,15 @@ struct PopoverView: View {
                 }.font(.system(size: 11))
                 Button("Quit") { onQuit() }.font(.system(size: 11))
             }
+
+            // Footer: credit + repo link
+            HStack(spacing: 0) {
+                Spacer()
+                Text("Made by Gustavo Souza · ").foregroundColor(.secondary)
+                Link("GitHub", destination: URL(string: kRepoURL)!)
+                Spacer()
+            }
+            .font(.system(size: 10))
         }
         .padding(14)
         .frame(width: 340)
@@ -617,6 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
+        statusItem.button?.toolTip = kAppName
         renderTitle()
 
         // Seed UI from last snapshot so the menu bar never starts empty
@@ -627,6 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         model.onChange = { [weak self] in self?.renderTitle() }
+        model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
         if #available(macOS 13.0, *) {
             model.launchAtLogin = SMAppService.mainApp.status == .enabled
         }
@@ -675,6 +814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.level = .popUpMenu
         p.collectionBehavior = [.canJoinAllSpaces, .transient]
         p.isReleasedWhenClosed = false
+        p.appearance = appearanceOverride()
         p.contentView = hosting
 
         if let btnWindow = statusItem.button?.window,
@@ -715,6 +855,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel = nil
     }
 
+    /// nil = follow system; otherwise force light/dark on the panel only.
+    func appearanceOverride() -> NSAppearance? {
+        switch Prefs.appearance {
+        case 1: return NSAppearance(named: .aqua)
+        case 2: return NSAppearance(named: .darkAqua)
+        default: return nil
+        }
+    }
+
+    func applyAppearance() { panel?.appearance = appearanceOverride() }
+
     func setLaunchAtLogin(_ on: Bool) {
         if #available(macOS 13.0, *) {
             do {
@@ -735,18 +886,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .font: font, .foregroundColor: NSColor.systemRed])
             return
         }
-        guard let session = model.session else {
+        guard let row = model.barRow else {
             button.image = nil
             button.attributedTitle = NSAttributedString(string: "…", attributes: [
                 .font: font, .foregroundColor: NSColor.secondaryLabelColor])
             return
         }
 
-        let used = session.percent
+        let used = row.percent
         let value = Prefs.showUsed ? used : (100 - used)
         let pctText = "\(Int(value.rounded()))%"
-        let cdText = countdownString(to: session.resetsAt)
-        let fCritical = (model.scoped?.percent ?? 0) >= 90
+        let cdText = countdownString(to: row.resetsAt)
+        // Red Fable dot as a global alarm, but not when Fable is already the shown metric.
+        let fCritical = (model.scoped?.percent ?? 0) >= 90 && row.kind != "weekly_scoped"
 
         // Text stays labelColor (white on dark menu bars) at all times.
         // Only the "%" glyph is tinted when the session gets tight.
