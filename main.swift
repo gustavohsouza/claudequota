@@ -21,6 +21,7 @@ let kStateDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/ClaudeQuota")
 let kAppName = "Claude Quota Monitor Bar"
 let kRepoURL = "https://github.com/gustavohsouza/claudequota"
+let kLinkedInURL = "https://www.linkedin.com/in/gustavosouza1/"
 
 // MARK: - Prefs
 
@@ -495,10 +496,10 @@ struct RadioDot: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(selected ? Color.accentColor : Color.secondary.opacity(0.5), lineWidth: 1.5)
+                .stroke(selected ? brandAccent() : Color.secondary.opacity(0.5), lineWidth: 1.5)
                 .frame(width: 14, height: 14)
             if selected {
-                Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                Circle().fill(brandAccent()).frame(width: 7, height: 7)
             }
         }
     }
@@ -522,15 +523,17 @@ struct LimitRowView: View {
                         Text("in menu bar")
                             .font(.system(size: 9))
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.22)))
-                            .foregroundColor(.accentColor)
+                            .background(Capsule().fill(brandAccent().opacity(0.22)))
+                            .foregroundColor(brandAccent())
                     }
                     if row.isActive {
                         Text("active limit")
                             .font(.system(size: 9))
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.orange.opacity(0.2)))
-                            .foregroundColor(.orange)
+                            .background(Capsule().fill(Color.orange.opacity(0.22)))
+                            .foregroundColor(dynamicColor(
+                                light: NSColor(srgbRed: 0.72, green: 0.42, blue: 0.0, alpha: 1),
+                                dark:  NSColor.orange))
                     }
                     Spacer()
                     Text(showUsed
@@ -551,15 +554,22 @@ struct LimitRowView: View {
         }
         .padding(.vertical, 5).padding(.horizontal, 6)
         .background(RoundedRectangle(cornerRadius: 7)
-            .fill(selected ? Color.accentColor.opacity(0.10) : Color.clear))
+            .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .help("Show this limit in the menu bar")
     }
     var color: Color {
-        if row.percent >= 90 { return .red }
-        if row.percent >= 75 { return .orange }
-        return .accentColor
+        // Slightly darker warning tones in light mode so they read on near-white.
+        if row.percent >= 90 {
+            return dynamicColor(light: NSColor(srgbRed: 0.80, green: 0.10, blue: 0.10, alpha: 1),
+                                dark:  NSColor.systemRed)
+        }
+        if row.percent >= 75 {
+            return dynamicColor(light: NSColor(srgbRed: 0.78, green: 0.42, blue: 0.0, alpha: 1),
+                                dark:  NSColor.systemOrange)
+        }
+        return brandAccent()
     }
 }
 
@@ -579,8 +589,8 @@ struct AutoRowView: View {
                         Text("in menu bar")
                             .font(.system(size: 9))
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.22)))
-                            .foregroundColor(.accentColor)
+                            .background(Capsule().fill(brandAccent().opacity(0.22)))
+                            .foregroundColor(brandAccent())
                     }
                     Spacer()
                 }
@@ -592,7 +602,7 @@ struct AutoRowView: View {
         }
         .padding(.vertical, 5).padding(.horizontal, 6)
         .background(RoundedRectangle(cornerRadius: 7)
-            .fill(selected ? Color.accentColor.opacity(0.10) : Color.clear))
+            .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .help("Show whichever limit is closest to its cap")
@@ -694,10 +704,12 @@ struct PopoverView: View {
                 Button("Quit") { onQuit() }.font(.system(size: 11))
             }
 
-            // Footer: credit + repo link
+            // Footer: credit (name → LinkedIn) + repo link
             HStack(spacing: 0) {
                 Spacer()
-                Text("Made by Gustavo Souza · ").foregroundColor(.secondary)
+                Text("Made by ").foregroundColor(.secondary)
+                Link("Gustavo Souza", destination: URL(string: kLinkedInURL)!)
+                Text(" and Claudinho · ").foregroundColor(.secondary)
                 Link("GitHub", destination: URL(string: kRepoURL)!)
                 Spacer()
             }
@@ -705,6 +717,7 @@ struct PopoverView: View {
         }
         .padding(14)
         .frame(width: 340)
+        .tint(brandAccent())
         .onReceive(timer) { now = $0 }
     }
 
@@ -724,17 +737,28 @@ struct PopoverView: View {
     }
 }
 
-// MARK: - Panel background
+// MARK: - Theme (adaptive light/dark colors)
 
-struct VisualEffectBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let v = NSVisualEffectView()
-        v.material = .popover
-        v.blendingMode = .behindWindow
-        v.state = .active
-        return v
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+/// An NSColor that resolves differently for light vs dark, honoring a forced
+/// panel appearance. Guarantees contrast regardless of the wallpaper behind.
+func dynamicColor(light: NSColor, dark: NSColor) -> Color {
+    Color(nsColor: NSColor(name: nil) { ap in
+        ap.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    })
+}
+
+/// Solid panel background (no translucency): near-white in light, deep gray in
+/// dark. Opaque so a dark wallpaper can't muddy the light theme.
+var panelBackgroundColor: Color {
+    dynamicColor(light: NSColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 1),
+                 dark:  NSColor(srgbRed: 0.12, green: 0.12, blue: 0.13, alpha: 1))
+}
+
+/// Accent used for selection, links, radios and the normal "% left" text.
+/// A strong blue on light (high contrast), a bright blue on dark.
+func brandAccent() -> Color {
+    dynamicColor(light: NSColor(srgbRed: 0.05, green: 0.39, blue: 0.75, alpha: 1),
+                 dark:  NSColor(srgbRed: 0.38, green: 0.66, blue: 1.00, alpha: 1))
 }
 
 // MARK: - App delegate
@@ -799,7 +823,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onRefresh: { [weak self] in self?.poll(force: true) },
             onToggleLogin: { [weak self] on in self?.setLaunchAtLogin(on) },
             onQuit: { NSApp.terminate(nil) })
-            .background(VisualEffectBackground())
+            .background(panelBackgroundColor)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.primary.opacity(0.15), lineWidth: 0.5))
