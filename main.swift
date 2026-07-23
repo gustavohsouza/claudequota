@@ -287,6 +287,7 @@ final class Model: ObservableObject {
     @Published var barMetric: String = Prefs.barMetric { didSet { Prefs.barMetric = barMetric; onChange?() } }
     @Published var appearance: Int = Prefs.appearance { didSet { Prefs.appearance = appearance; onAppearanceChange?() } }
     @Published var launchAtLogin: Bool = false
+    @Published var loginNeedsApproval: Bool = false
 
     var onChange: (() -> Void)?
     var onAppearanceChange: (() -> Void)?
@@ -684,10 +685,20 @@ struct PopoverView: View {
                     .font(.system(size: 11))
                 Toggle("Notify when 5h session resets", isOn: $model.notifyReset)
                     .font(.system(size: 11))
-                Toggle("Launch at login", isOn: Binding(
-                    get: { model.launchAtLogin },
-                    set: { onToggleLogin($0) }))
-                    .font(.system(size: 11))
+                HStack(spacing: 8) {
+                    Toggle("Open at login", isOn: Binding(
+                        get: { model.launchAtLogin },
+                        set: { onToggleLogin($0) }))
+                        .font(.system(size: 11))
+                    if model.loginNeedsApproval {
+                        Button("Approve in System Settings…") {
+                            NSWorkspace.shared.open(URL(string:
+                                "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!)
+                        }
+                        .font(.system(size: 10))
+                        .buttonStyle(.link)
+                    }
+                }
             }
             .toggleStyle(.checkbox)
 
@@ -790,9 +801,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         model.onChange = { [weak self] in self?.renderTitle() }
         model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
-        if #available(macOS 13.0, *) {
-            model.launchAtLogin = SMAppService.mainApp.status == .enabled
-        }
+        refreshLoginStatus()
 
         pollTimer = Timer.scheduledTimer(withTimeInterval: kPollInterval, repeats: true) { [weak self] _ in
             self?.poll()
@@ -891,13 +900,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applyAppearance() { panel?.appearance = appearanceOverride() }
 
     func setLaunchAtLogin(_ on: Bool) {
-        if #available(macOS 13.0, *) {
-            do {
-                if on { try SMAppService.mainApp.register() }
-                else { try SMAppService.mainApp.unregister() }
-            } catch {}
-            model.launchAtLogin = SMAppService.mainApp.status == .enabled
+        guard #available(macOS 13.0, *) else { return }
+        let svc = SMAppService.mainApp
+        do {
+            if on { try svc.register() } else { try svc.unregister() }
+        } catch {
+            // Surface (don't swallow): ad-hoc builds sometimes need user approval.
+            NSLog("ClaudeQuota login item error: \(error.localizedDescription)")
         }
+        refreshLoginStatus()
+    }
+
+    func refreshLoginStatus() {
+        guard #available(macOS 13.0, *) else { return }
+        let st = SMAppService.mainApp.status
+        model.launchAtLogin = (st == .enabled)
+        model.loginNeedsApproval = (st == .requiresApproval)
     }
 
     func renderTitle() {
