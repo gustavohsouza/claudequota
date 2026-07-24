@@ -11,14 +11,16 @@ Claude (Pro/Max).
    Command Line Tools, rode `xcode-select --install`, avise o usuário para concluir a
    janela do macOS e retome depois.
 
-2. **Compile e instale** (a partir desta pasta):
+2. **Compile e instale** (a partir desta pasta; o bundle tem espaços no nome, use aspas):
    ```
    swiftc -swift-version 5 -O -o ClaudeQuota main.swift
-   rm -rf /Applications/ClaudeQuota.app
-   mkdir -p /Applications/ClaudeQuota.app/Contents/MacOS /Applications/ClaudeQuota.app/Contents/Resources
-   cp ClaudeQuota /Applications/ClaudeQuota.app/Contents/MacOS/ClaudeQuota
-   cp Info.plist /Applications/ClaudeQuota.app/Contents/Info.plist
-   codesign --force --deep --sign - /Applications/ClaudeQuota.app
+   APP="/Applications/Claude Quota Monitor Bar.app"
+   rm -rf "$APP" "/Applications/ClaudeQuota.app"
+   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+   cp ClaudeQuota "$APP/Contents/MacOS/ClaudeQuota"
+   cp Info.plist "$APP/Contents/Info.plist"
+   cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+   codesign --force --deep --sign - "$APP"
    ```
 
 3. **Garanta a autenticação** — o app lê a credencial do Claude Code CLI no Keychain
@@ -28,11 +30,13 @@ Claude (Pro/Max).
      `claude auth login --claudeai`. O browser abre; o USUÁRIO clica em Authorize na
      conta dele. Nunca leia ou exiba o token.
 
-4. **Lance e valide**: `open /Applications/ClaudeQuota.app`. Após ~5s, confira
+4. **Lance e valide**: `open "/Applications/Claude Quota Monitor Bar.app"`. Após ~5s, confira
    `~/Library/Application Support/ClaudeQuota/state.json` — deve conter `"status" : "ok"`
    e os percentuais. O item aparece ao lado do relógio (2 linhas: % restante / countdown).
+   Se vier `"http" : 429`, é rate limit passageiro do endpoint: aguarde ~2 min e cheque de novo.
 
-5. **Sugira ao usuário**: clicar no item e ativar "Launch at login" no painel.
+5. **Sugira ao usuário**: clicar no item, escolher qual limite aparece na barra
+   (Session / Week / modelo / Auto) e ativar "Open at login".
 
 ## Notas de segurança
 - Não modifique o main.swift. Não imprima tokens. O app só chama a API read-only de

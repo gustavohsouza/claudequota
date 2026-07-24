@@ -1,10 +1,11 @@
 #!/bin/zsh
-# ClaudeQuota — instalador local (compila na sua máquina, nada baixado de terceiros)
+# Claude Quota Monitor Bar — instalador local (compila na sua máquina, nada baixado de terceiros)
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-APP="/Applications/ClaudeQuota.app"
+APP="/Applications/Claude Quota Monitor Bar.app"
+OLD="/Applications/ClaudeQuota.app"   # nome antigo, removido se existir
 
-echo "═══ ClaudeQuota installer ═══"
+echo "═══ Claude Quota Monitor Bar installer ═══"
 
 # 1. Ferramentas de compilação (Xcode Command Line Tools)
 if ! xcode-select -p >/dev/null 2>&1; then
@@ -18,10 +19,13 @@ fi
 echo "→ Compilando..."
 cd "$DIR"
 swiftc -swift-version 5 -O -o ClaudeQuota main.swift
-rm -rf "$APP"
+pkill -x ClaudeQuota 2>/dev/null || true
+sleep 0.5
+rm -rf "$APP" "$OLD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ClaudeQuota "$APP/Contents/MacOS/ClaudeQuota"
 cp Info.plist "$APP/Contents/Info.plist"
+cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 rm -f ClaudeQuota
 echo "✓ Instalado em $APP"
@@ -36,7 +40,7 @@ if ! command -v claude >/dev/null 2>&1; then
   else
     echo "⚠ Instale o Claude Code manualmente (https://claude.com/claude-code) e rode:"
     echo "    claude auth login --claudeai"
-    echo "  Depois abra o ClaudeQuota de novo."
+    echo "  Depois abra o app de novo."
   fi
 fi
 
@@ -49,5 +53,5 @@ if command -v claude >/dev/null 2>&1; then
 fi
 
 open "$APP"
-echo "✓ Pronto! Olhe ao lado do relógio: % restante da sessão em cima, tempo até o reset embaixo."
-echo "  Clique no item para ver os limites semanais e as opções."
+echo "✓ Pronto! Olhe ao lado do relógio: % restante em cima, tempo até o reset embaixo."
+echo "  Clique no item para escolher qual limite aparece na barra e ativar 'Open at login'."

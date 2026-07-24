@@ -124,6 +124,14 @@ final class CredsManager {
         json["claudeAiOauth"] = oauth
         guard let data = try? JSONSerialization.data(withJSONObject: json),
               let s = String(data: data, encoding: .utf8) else { return }
+        // Prefer security's interactive mode: the credential travels via stdin,
+        // never via argv (argv is briefly visible to other local processes in `ps`).
+        if !s.contains("'") && !s.contains("\\") {
+            let cmd = "add-generic-password -U -a \"\(account)\" -s \"\(kKeychainService)\" -w '\(s)'\n"
+            let r = shell("/usr/bin/security", ["-i"], stdin: cmd)
+            if r.code == 0 { return }
+        }
+        // Fallback (values not representable in interactive quoting — never seen in practice)
         shell("/usr/bin/security",
               ["add-generic-password", "-U", "-a", account, "-s", kKeychainService, "-w", s])
     }
@@ -733,7 +741,10 @@ struct PopoverView: View {
     }
 
     var updatedText: String {
-        guard let t = model.lastUpdate else { return "never updated" }
+        guard let t = model.lastUpdate else {
+            if case .stale = model.status, !model.rows.isEmpty { return "showing cached data" }
+            return "never updated"
+        }
         let s = Int(now.timeIntervalSince(t))
         return s < 120 ? "updated \(max(0, s))s ago" : "updated \(s / 60)m ago"
     }
