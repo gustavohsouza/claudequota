@@ -61,7 +61,7 @@ Quit no painel e `rm -rf "/Applications/Claude Quota Monitor Bar.app"`. A creden
 
 ## Licença
 
-CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0). Você pode usar, distribuir e modificar livremente para fins **não comerciais**. Qualquer redistribuição ou derivado deve **creditar Gustavo Souza**, linkar este repositório e permanecer sob a mesma licença. Detalhes em [LICENSE](LICENSE).
+CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0). Você pode usar, distribuir e modificar livremente para fins **não comerciais**. Qualquer redistribuição ou derivado deve **creditar Gustavo Souza**, linkar este repositório e permanecer sob a mesma licença. Texto legal completo em [LICENSE](LICENSE); a exigência de atribuição está em [NOTICE](NOTICE).
 
 ## Créditos
 

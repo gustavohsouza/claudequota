@@ -1,0 +1,21 @@
+Claude Quota Monitor Bar
+Copyright (c) 2026 Gustavo Souza
+
+Licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License (CC BY-NC-SA 4.0). Full terms in the LICENSE file:
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+REQUIRED ATTRIBUTION
+--------------------
+Any redistribution or derivative work must give explicit credit to the
+author and link the original repository. Use, at minimum:
+
+  "Based on Claude Quota Monitor Bar by Gustavo Souza
+   (https://github.com/gustavohsouza/claudequota), licensed under
+   CC BY-NC-SA 4.0."
+
+In addition you must:
+  - indicate if you made changes;
+  - keep the work NonCommercial (no commercial use); and
+  - license any derivative under these same CC BY-NC-SA 4.0 terms
+    (ShareAlike), so it stays open under the author's conditions.
