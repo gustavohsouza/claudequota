@@ -421,6 +421,15 @@ final class Fetcher {
             failStreak += 1
             pausedUntil = Date().addingTimeInterval(min(300, 60 * pow(2, Double(failStreak - 1))))
         }
+        // Don't wait for the next aligned timer tick after a pause: retry the moment
+        // it expires (otherwise a 429 can stretch the effective gap to ~3 minutes).
+        if let p = pausedUntil {
+            let delay = p.timeIntervalSinceNow + 1
+            queue.asyncAfter(deadline: .now() + max(1, delay)) { [weak self] in
+                guard let self = self else { return }
+                self.fetch(model: model, statusUpdate: statusUpdate)
+            }
+        }
         DispatchQueue.main.async {
             model.lastHTTP = code
             model.lastErrorBody = bodyPrefix
@@ -793,6 +802,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let fetcher = Fetcher()
     var pollTimer: Timer?
     var tickTimer: Timer?
+    var activityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -814,19 +824,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
         refreshLoginStatus()
 
+        // Opt out of App Nap: as a windowless accessory app, macOS would otherwise
+        // freeze our timers during idle periods and the 80s cadence slips to minutes.
+        // .userInitiatedAllowingIdleSystemSleep keeps timers honest WITHOUT
+        // preventing the Mac from sleeping.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Periodic Claude quota polling")
+
         pollTimer = Timer.scheduledTimer(withTimeInterval: kPollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        pollTimer?.tolerance = 5
         tickTimer = Timer.scheduledTimer(withTimeInterval: kTickInterval, repeats: true) { [weak self] _ in
             self?.renderTitle()
         }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+        tickTimer?.tolerance = 3
+
+        // Refresh promptly on every "coming back" path: system wake, display wake,
+        // and fast-user-switch back to this session.
+        let wsnc = NSWorkspace.shared.notificationCenter
+        wsnc.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+        wsnc.addObserver(self, selector: #selector(didWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        wsnc.addObserver(self, selector: #selector(didWake), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
 
         poll()
     }
 
-    @objc func didWake() { DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.poll() } }
+    @objc func didWake() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            self.renderTitle()
+            self.poll()
+        }
+    }
 
     func poll(force: Bool = false) {
         fetcher.fetch(model: model, force: force) { [weak self] in self?.renderTitle() }
@@ -838,6 +868,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showPanel() {
         closePanel()
+        // The moment the user looks is the moment freshness matters most.
+        if model.lastUpdate.map({ Date().timeIntervalSince($0) > 60 }) ?? true { poll() }
         let root = PopoverView(
             model: model,
             onRefresh: { [weak self] in self?.poll(force: true) },
