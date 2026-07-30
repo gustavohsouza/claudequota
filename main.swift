@@ -532,49 +532,54 @@ struct LimitRowView: View {
     let onSelect: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            RadioDot(selected: selected).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(row.label).font(.system(size: 12, weight: .medium))
-                    if selected {
-                        Text("in menu bar")
-                            .font(.system(size: 9))
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(brandAccent().opacity(0.22)))
-                            .foregroundColor(brandAccent())
+        // A real Button (not onTapGesture): reliable hit-testing across the whole
+        // row — radio dot, labels, bar and whitespace — even in a non-key panel.
+        Button(action: onSelect) {
+            HStack(alignment: .top, spacing: 8) {
+                RadioDot(selected: selected).padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(row.label).font(.system(size: 12, weight: .medium))
+                        if selected {
+                            Text("in menu bar")
+                                .font(.system(size: 9))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(brandAccent().opacity(0.22)))
+                                .foregroundColor(brandAccent())
+                        }
+                        if row.isActive {
+                            Text("active limit")
+                                .font(.system(size: 9))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.orange.opacity(0.22)))
+                                .foregroundColor(dynamicColor(
+                                    light: NSColor(srgbRed: 0.72, green: 0.42, blue: 0.0, alpha: 1),
+                                    dark:  NSColor.orange))
+                        }
+                        Spacer()
+                        Text(showUsed
+                             ? "\(Int(row.percent.rounded()))% used"
+                             : "\(Int((100 - row.percent).rounded()))% left")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundColor(color)
                     }
-                    if row.isActive {
-                        Text("active limit")
-                            .font(.system(size: 9))
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.orange.opacity(0.22)))
-                            .foregroundColor(dynamicColor(
-                                light: NSColor(srgbRed: 0.72, green: 0.42, blue: 0.0, alpha: 1),
-                                dark:  NSColor.orange))
+                    ProgressView(value: min(max(row.percent, 0), 100), total: 100)
+                        .tint(color)
+                    HStack {
+                        Spacer()
+                        Text("resets \(absoluteResetString(row.resetsAt)) (\(countdownString(to: row.resetsAt)))")
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundColor(.secondary)
                     }
-                    Spacer()
-                    Text(showUsed
-                         ? "\(Int(row.percent.rounded()))% used"
-                         : "\(Int((100 - row.percent).rounded()))% left")
-                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                        .foregroundColor(color)
-                }
-                ProgressView(value: min(max(row.percent, 0), 100), total: 100)
-                    .tint(color)
-                HStack {
-                    Spacer()
-                    Text("resets \(absoluteResetString(row.resetsAt)) (\(countdownString(to: row.resetsAt)))")
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundColor(.secondary)
                 }
             }
+            .padding(.vertical, 5).padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 7)
+                .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 5).padding(.horizontal, 6)
-        .background(RoundedRectangle(cornerRadius: 7)
-            .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .buttonStyle(.plain)
         .help("Show this limit in the menu bar")
     }
     var color: Color {
@@ -598,31 +603,34 @@ struct AutoRowView: View {
     let resolvedLabel: String?
     let onSelect: () -> Void
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            RadioDot(selected: selected).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text("Auto").font(.system(size: 12, weight: .medium))
-                    if selected {
-                        Text("in menu bar")
-                            .font(.system(size: 9))
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(brandAccent().opacity(0.22)))
-                            .foregroundColor(brandAccent())
+        Button(action: onSelect) {
+            HStack(alignment: .top, spacing: 8) {
+                RadioDot(selected: selected).padding(.top, 1)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text("Auto").font(.system(size: 12, weight: .medium))
+                        if selected {
+                            Text("in menu bar")
+                                .font(.system(size: 9))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(brandAccent().opacity(0.22)))
+                                .foregroundColor(brandAccent())
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    Text(selected && resolvedLabel != nil
+                         ? "follows the tightest limit · now: \(resolvedLabel!)"
+                         : "follows the tightest limit")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
                 }
-                Text(selected && resolvedLabel != nil
-                     ? "follows the tightest limit · now: \(resolvedLabel!)"
-                     : "follows the tightest limit")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
             }
+            .padding(.vertical, 5).padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 7)
+                .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 5).padding(.horizontal, 6)
-        .background(RoundedRectangle(cornerRadius: 7)
-            .fill(selected ? brandAccent().opacity(0.12) : Color.clear))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .buttonStyle(.plain)
         .help("Show whichever limit is closest to its cap")
     }
 }
