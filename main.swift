@@ -318,13 +318,14 @@ final class Fetcher {
     private var lastSessionPercent: Double = 0
     private let queue = DispatchQueue(label: "quota.fetch")
     private var failStreak = 0
+    private var streak429 = 0
     private var pausedUntil: Date?
     private var lastProfileCheck: Date?
 
     func fetch(model: Model, force: Bool = false, statusUpdate: @escaping () -> Void) {
         queue.async { [weak self] in
             guard let self = self else { return }
-            if force { self.pausedUntil = nil; self.failStreak = 0 } // manual refresh busts any pause
+            if force { self.pausedUntil = nil; self.failStreak = 0; self.streak429 = 0 } // manual refresh busts any pause
             if let p = self.pausedUntil, p > Date() {
                 DispatchQueue.main.async { statusUpdate() }
                 return
@@ -386,13 +387,10 @@ final class Fetcher {
                 }
                 return
             }
-            if code == 429 && tries < 2 {
-                let delay = max(retryAfter ?? 0, 2.5)
-                self.queue.asyncAfter(deadline: .now() + delay) {
-                    self.attempt(creds: creds, model: model, tries: tries + 1, statusUpdate: statusUpdate)
-                }
-                return
-            }
+            // No same-cycle retry bursts on 429: the endpoint's bucket (~1 req/min,
+            // shared with the Claude desktop app) refills slowly — bursts just burn
+            // tokens without landing a 200. Single attempt; the short jittered pause
+            // in finish() schedules the next one.
             self.finish(model: model, data: data, code: code, tier: creds.rateLimitTier, statusUpdate: statusUpdate)
         }
     }
@@ -413,10 +411,15 @@ final class Fetcher {
         let rows = data.flatMap { code == 200 ? parseUsage($0) : nil } ?? []
         let bodyPrefix = (code != 200) ? String(data: data?.prefix(200) ?? Data(), encoding: .utf8) ?? "" : ""
         if code == 200 && !rows.isEmpty {
-            failStreak = 0; pausedUntil = nil
+            failStreak = 0; streak429 = 0; pausedUntil = nil
         } else if code == 429 {
-            // Short flat pause only — the bucket refills in seconds, next poll usually succeeds
-            pausedUntil = Date().addingTimeInterval(90)
+            // The limiter behaves like a sliding window (Retry-After: 0 but keeps
+            // denying): repeated 429s mean the window is saturated — insisting on a
+            // short cadence keeps it saturated forever. Escalate 60s → 120s → 240s
+            // (+jitter) so the window can actually drain; reset on any 200.
+            streak429 += 1
+            let base = min(240.0, 60.0 * pow(2, Double(streak429 - 1)))
+            pausedUntil = Date().addingTimeInterval(base + Double.random(in: 0...20))
         } else if code >= 500 || code == 0 {
             failStreak += 1
             pausedUntil = Date().addingTimeInterval(min(300, 60 * pow(2, Double(failStreak - 1))))
